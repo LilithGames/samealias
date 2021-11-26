@@ -1,8 +1,10 @@
 package samealias
 
 import (
+	"bufio"
 	"fmt"
 	"go/ast"
+	"os"
 	"strconv"
 	"strings"
 
@@ -22,10 +24,22 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
-	inspect.Preorder([]ast.Node{(*ast.ImportSpec)(nil)}, func(n ast.Node) {
-		visitImportSpecNode(n.(*ast.ImportSpec), pass)
-	})
+	filename := pass.Fset.Position(pass.Files[0].Pos()).Filename
+
+	res, err := isAutogenFile(filename)
+
+	if err != nil {
+		panic(err)
+	} else if !res {
+		inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+		inspect.Preorder([]ast.Node{(*ast.ImportSpec)(nil)}, func(n ast.Node) {
+			visitImportSpecNode(n.(*ast.ImportSpec), pass)
+		})
+		fmt.Println(filename, "not autogen file, need process")
+	} else {
+		fmt.Println(filename, "autogen file, no need process")
+	}
+
 	return nil, nil
 }
 
@@ -71,4 +85,24 @@ func visitImportSpecNode(node *ast.ImportSpec, pass *analysis.Pass) {
 			imports[path] = alias
 		}
 	}
+}
+
+func isAutogenFile(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines := strings.ToUpper(scanner.Text())
+		if strings.Contains(lines, "PACKAGE") {
+			return false, scanner.Err()
+		}
+		if strings.Contains(lines, "DO NOT EDIT") {
+			return true, scanner.Err()
+		}
+	}
+	return false, scanner.Err()
 }
