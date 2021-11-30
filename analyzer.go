@@ -2,95 +2,105 @@ package samealias
 
 import (
 	"bufio"
-	"fmt"
+	"flag"
 	"go/ast"
+	"go/token"
 	"os"
 	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
-	"golang.org/x/tools/go/analysis/passes/inspect"
-	"golang.org/x/tools/go/ast/inspector"
 )
 
-var imports = map[string]string{}
+type aliaspath struct {
+	alias    string
+	position token.Position
+}
 
-var Analyzer = &analysis.Analyzer{
-	Name: "samealias",
-	Doc:  "check different aliases for same package",
-	Run:  run,
+var imports = map[string]aliaspath{}
 
-	Requires: []*analysis.Analyzer{inspect.Analyzer},
+//nolint:gochecknoglobals
+var flagSet flag.FlagSet
+
+//nolint:gochecknoglobals
+var (
+	skipAutogens bool
+)
+
+//nolint:gochecknoinits
+func init() {
+	flagSet.BoolVar(&skipAutogens, "skipAutogens", false, "should the linter execute on autogen files as well")
+}
+
+func NewAnalyzer() *analysis.Analyzer {
+	return &analysis.Analyzer{
+		Name:  "samealias",
+		Doc:   "check different aliases for same package",
+		Run:   run,
+		Flags: flagSet,
+	}
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
-	filename := pass.Fset.Position(pass.Files[0].Pos()).Filename
 
-	res, err := isAutogenFile(filename)
+	for _, file := range pass.Files {
+		filename := pass.Fset.Position((file.Pos())).Filename
+		if skipAutogens && isAutogenFile(filename) {
+			continue
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			f, ok := node.(*ast.ImportSpec)
+			if !ok {
+				if node == nil {
+					return true
+				}
+				return true
+			}
 
-	if err != nil {
-		panic(err)
-	} else if !res {
-		inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
-		inspect.Preorder([]ast.Node{(*ast.ImportSpec)(nil)}, func(n ast.Node) {
-			visitImportSpecNode(n.(*ast.ImportSpec), pass)
+			if f.Name == nil {
+				return true
+			}
+
+			alias := ""
+			if f.Name != nil {
+				alias = f.Name.String()
+			}
+
+			if alias == "." {
+				return true // Dot aliases are generally used in tests, so ignore.
+			}
+			if strings.HasPrefix(alias, "_") {
+				return true // Used by go test and for auto-includes, not a conflict.
+			}
+
+			path, err := strconv.Unquote(f.Path.Value)
+			if err != nil {
+				pass.Reportf(f.Pos(), "import not quoted")
+			}
+
+			if alias != "" {
+				val, ok := imports[path]
+				if ok {
+					if val.alias != alias {
+						pass.Reportf(f.Pos(), "package %q have alias %q, conflict with %q in %q", path, alias, val.alias, val.position)
+					}
+				} else {
+					imports[path] = aliaspath{alias: alias, position: pass.Fset.Position(f.Pos())}
+				}
+			}
+
+			return true
 		})
-		fmt.Println(filename, "not autogen file, need process")
-	} else {
-		fmt.Println(filename, "autogen file, no need process")
 	}
 
 	return nil, nil
 }
 
-func visitImportSpecNode(node *ast.ImportSpec, pass *analysis.Pass) {
-	if node.Name == nil {
-		return
-	}
-
-	alias := ""
-	if node.Name != nil {
-		alias = node.Name.String()
-	}
-
-	if alias == "." {
-		return // Dot aliases are generally used in tests, so ignore.
-	}
-
-	if strings.HasPrefix(alias, "_") {
-		return // Used by go test and for auto-includes, not a conflict.
-	}
-
-	path, err := strconv.Unquote(node.Path.Value)
-	if err != nil {
-		pass.Reportf(node.Pos(), "import not quoted")
-	}
-
-	if alias != "" {
-		val, ok := imports[path]
-		if ok {
-			if val != alias {
-				message := fmt.Sprintf("package %q have different alias, %q, %q", path, alias, val)
-
-				pass.Report(analysis.Diagnostic{
-					Pos:     node.Pos(),
-					End:     node.End(),
-					Message: message,
-					SuggestedFixes: []analysis.SuggestedFix{{
-						Message: "Use same alias or do not use alias",
-					}},
-				})
-			}
-		} else {
-			imports[path] = alias
-		}
-	}
-}
-
-func isAutogenFile(path string) (bool, error) {
+// autogen files containe "do not edit" before package key word
+func isAutogenFile(path string) bool {
 	file, err := os.Open(path)
 	if err != nil {
-		return false, err
+		return false
 	}
 	defer file.Close()
 
@@ -98,11 +108,12 @@ func isAutogenFile(path string) (bool, error) {
 	for scanner.Scan() {
 		lines := strings.ToUpper(scanner.Text())
 		if strings.Contains(lines, "PACKAGE") {
-			return false, scanner.Err()
+			return false
 		}
 		if strings.Contains(lines, "DO NOT EDIT") {
-			return true, scanner.Err()
+			return true
 		}
 	}
-	return false, scanner.Err()
+
+	return false
 }
