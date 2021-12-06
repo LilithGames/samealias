@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/analysis"
 )
@@ -17,7 +18,7 @@ type aliaspath struct {
 	position token.Position
 }
 
-var imports = map[string]aliaspath{}
+var imports sync.Map
 
 //nolint:gochecknoglobals
 var flagSet flag.FlagSet
@@ -79,13 +80,18 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 
 			if alias != "" {
-				val, ok := imports[path]
-				if ok {
-					if val.alias != alias {
-						pass.Reportf(f.Pos(), "package %q have alias %q, conflict with %q in %q", path, alias, val.alias, val.position)
+				value, exist := imports.Load(path)
+				if exist {
+					val, ok := value.(aliaspath)
+					if ok {
+						if val.alias != alias {
+							pass.Reportf(f.Pos(), "package %q have alias %q, conflict with %q in %q", path, alias, val.alias, val.position)
+						}
+					} else {
+						pass.Reportf(f.Pos(), "value.(aliaspath) failed, value : ", value)
 					}
 				} else {
-					imports[path] = aliaspath{alias: alias, position: pass.Fset.Position(f.Pos())}
+					imports.Store(path, aliaspath{alias: alias, position: pass.Fset.Position(f.Pos())})
 				}
 			}
 
