@@ -30,7 +30,7 @@ var (
 
 //nolint:gochecknoinits
 func init() {
-	flagSet.BoolVar(&skipAutogens, "skipAutogens", false, "should the linter execute on autogen files as well")
+	flagSet.BoolVar(&skipAutogens, "skipAutogens", true, "should the linter skip autogen files")
 }
 
 func NewAnalyzer() *analysis.Analyzer {
